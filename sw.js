@@ -1,5 +1,5 @@
 // Cambia la versión al publicar cambios para que el móvil descargue la nueva app.
-const VERSION = 'mishoras-v2';
+const VERSION = 'mishoras-v3';
 const SHELL = [
   './',
   'index.html',
@@ -11,7 +11,9 @@ const SHELL = [
   'vendor/jspdf.plugin.autotable.min.js',
   'icons/icon-192.png',
   'icons/icon-512.png',
-  'icons/apple-touch-icon.png'
+  'icons/apple-touch-icon.png',
+  'icons/favicon-32.png',
+  'icons/icon-maskable-512.png'
 ];
 
 self.addEventListener('install', (e) => {
@@ -24,6 +26,11 @@ self.addEventListener('activate', (e) => {
       .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
+});
+
+// El botón "Actualizar app" pide activar ya la versión nueva
+self.addEventListener('message', (e) => {
+  if (e.data === 'skipWaiting') self.skipWaiting();
 });
 
 self.addEventListener('fetch', (e) => {
@@ -53,7 +60,7 @@ self.addEventListener('fetch', (e) => {
 
   // App: red primero (para recibir actualizaciones), caché si no hay conexión
   e.respondWith(
-    fetch(req)
+    fetch(req, { cache: 'no-cache' })
       .then((res) => {
         const copy = res.clone();
         caches.open(VERSION).then((c) => c.put(req, copy));

@@ -5,6 +5,8 @@
    ========================================================= */
 
 const KEY = 'mishoras.v1';
+// Súbela junto a VERSION en sw.js en cada publicación
+const APP_VERSION = '1.2';
 const DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const DAYS_SHORT = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
 const DAYS_LETTER = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
@@ -57,7 +59,8 @@ const ICON = {
   alert: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
-  flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>'
+  flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  refresh: '<path d="M20 11a8 8 0 0 0-14.6-4.5L3 9"/><path d="M3 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.5L21 15"/><path d="M21 20v-5h-5"/>'
 };
 const ico = (n) => `<svg viewBox="0 0 24 24">${ICON[n] || ''}</svg>`;
 
@@ -735,6 +738,7 @@ VIEWS.perfil = () => {
   <div class="section-title">Ajustes</div>
   <div class="card menu" style="padding:0">
     ${menuItem('settings', 'gear', 'Cálculo de horas', `${st.diasLab} días laborables · saldo inicial ${fmtDur(st.saldoInicial, true)}`)}
+    ${menuItem('updateApp', 'refresh', 'Actualizar app', `Versión ${APP_VERSION} · busca y carga la última versión`)}
   </div>
 
   <div class="section-title">Tus datos</div>
@@ -743,7 +747,7 @@ VIEWS.perfil = () => {
     ${menuItem('importJson', 'upload', 'Restaurar copia', 'Recuperar datos desde un archivo .json')}
     ${menuItem('wipe', 'trash', 'Borrar todos los datos', 'No se puede deshacer', 'danger')}
   </div>
-  <p class="muted small" style="text-align:center;margin-top:18px">Mis Horas · tus datos se guardan solo en este dispositivo.</p>`;
+  <p class="muted small" style="text-align:center;margin-top:18px">Mis Horas v${APP_VERSION} · tus datos se guardan solo en este dispositivo.</p>`;
 };
 function menuItem(act, icon, title, sub, extra = '') {
   return `<button class="menu-item ${extra}" data-act="${act}"><span class="mi-ic">${ico(icon)}</span><div><b>${title}</b><small>${esc(sub)}</small></div><svg class="chev" viewBox="0 0 24 24">${ICON.chev}</svg></button>`;
@@ -1401,6 +1405,37 @@ $('#importFile').addEventListener('change', async (e) => {
   }
 });
 
+/* ---------- Actualizar la app ---------- */
+// Descarga la última versión publicada y recarga. Los datos (localStorage) no se tocan.
+async function updateApp() {
+  toast('Buscando actualizaciones…');
+  try {
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) {
+        await reg.update();
+        if (reg.waiting) reg.waiting.postMessage('skipWaiting');
+      }
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (e) { /* sin conexión: se recarga igualmente */ }
+  try { localStorage.setItem(KEY + '.updating', '1'); } catch (e) {}
+  setTimeout(() => location.reload(), 700);
+}
+function announceUpdate() {
+  try {
+    const prev = localStorage.getItem(KEY + '.appVersion');
+    const asked = localStorage.getItem(KEY + '.updating');
+    localStorage.setItem(KEY + '.appVersion', APP_VERSION);
+    localStorage.removeItem(KEY + '.updating');
+    if (prev && prev !== APP_VERSION) toast(`App actualizada a la versión ${APP_VERSION}`);
+    else if (asked) toast(`Ya tienes la última versión (${APP_VERSION})`);
+  } catch (e) {}
+}
+
 /* ---------- Calendario (.ics) ---------- */
 function weekIcs(w) {
   const dt = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
@@ -1449,6 +1484,7 @@ const ACT = {
   settings() { openSettings(); },
   goHistory() { go('#/historial'); },
   exportJson() { exportJson(); },
+  updateApp() { updateApp(); },
   importJson() { $('#importFile').click(); },
   async wipe() {
     if (!(await confirmBox('Borrar todo', 'Se borrarán todas las semanas, movimientos y datos. Descarga antes una copia de seguridad.', 'Borrar todo', true))) return;
@@ -1495,6 +1531,7 @@ document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.prev
   $('#barDate').textContent = `${DAYS_SHORT[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
   if (!location.hash) history.replaceState(null, '', '#/inicio');
   route();
+  announceUpdate();
   // refresca la cuenta atrás del próximo turno
   setInterval(() => { if ((location.hash || '#/inicio').startsWith('#/inicio') && !sheetEl) route(); }, 60000);
 })();
