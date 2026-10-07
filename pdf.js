@@ -115,7 +115,19 @@ const PDF = (() => {
   }
   function controlRows(items) {
     return items.map((it) => [fmtNum(it.date), it.mov.concepto || '-', dur(it.official, true), dur(it.app, true),
-      { content: it.gap === 0 ? 'Coincide' : dur(it.gap, true), styles: { fontStyle: 'bold', textColor: it.gap === 0 ? [20, 130, 80] : [190, 110, 0] } }, it.mov.nota || '-']);
+      { content: it.gap === 0 ? 'Coincide' : dur(it.gap, true), styles: { fontStyle: 'bold', textColor: it.gap === 0 ? [20, 130, 80] : [190, 110, 0] } },
+      DEBATE[controlStatus(it)].label, it.mov.nota || '-']);
+  }
+  const controlHead = ['Fecha', 'Fuente', 'Empresa', 'Mi registro', 'Diferencia', 'Estado', 'Nota'];
+  const controlCols = { 0: { cellWidth: 19 }, 2: { cellWidth: 18 }, 3: { cellWidth: 19 }, 4: { cellWidth: 19 }, 5: { cellWidth: 30 } };
+  // Notas del debate de cada crédito horario, en orden cronológico
+  function debateThreads(ctx, items) {
+    const withNotes = items.filter((it) => (it.mov.thread || []).length);
+    if (!withNotes.length) return;
+    withNotes.forEach((it) => {
+      ctx.p(`Debate del crédito horario del ${fmtNum(it.date)} (${DEBATE[controlStatus(it)].label}):`, { size: 8.6, bold: true, gap: 1 });
+      ctx.table(['Fecha y hora', 'Nota'], it.mov.thread.map((t) => [fmtTs(t.ts), t.text]), { styles: { fontSize: 7.8, cellPadding: 1.4 }, columnStyles: { 0: { cellWidth: 27 } } });
+    });
   }
   function logRows(entries) {
     return entries.map((l) => [fmtTs(l.ts), `${l.action} ${l.kind}${l.ref ? ' (' + l.ref + ')' : ''}`, l.detail || '-']);
@@ -203,8 +215,9 @@ const PDF = (() => {
       ctx.table(['Fecha', 'Tipo', 'Concepto', 'Nota / prueba', 'Horas'], movRowsFor(st.movs), { columnStyles: { 0: { cellWidth: 20 }, 1: { cellWidth: 24 }, 4: { cellWidth: 20 } } });
     }
     if (controls.length) {
-      ctx.h('Controles de saldo comunicados por la empresa');
-      ctx.table(['Fecha', 'Fuente', 'Empresa', 'Mi registro', 'Diferencia', 'Nota'], controlRows(controls), { columnStyles: { 0: { cellWidth: 20 } } });
+      ctx.h('Crédito horario comunicado por la empresa');
+      ctx.table(controlHead, controlRows(controls), { columnStyles: controlCols });
+      debateThreads(ctx, controls);
     }
     if (alerts.length) {
       ctx.h('Incidencias detectadas');
@@ -257,14 +270,16 @@ const PDF = (() => {
       ['Saldo inicial' + (S.settings.saldoInicialFecha ? ` (${fmtNum(S.settings.saldoInicialFecha)})` : ''), both(S.settings.saldoInicial || 0)],
       [{ content: `SALDO ACTUAL a ${fmtNum(todayISO())} (semanas cerradas)`, styles: { fontStyle: 'bold' } }, { content: both(L.current), styles: { fontStyle: 'bold', textColor: L.current < 0 ? [190, 40, 60] : [20, 130, 80] } }],
       ['Saldo previsto al cerrar la semana en curso', both(L.projected)],
-      ['Controles oficiales con discrepancia', `${controls.filter((c) => c.gap !== 0).length} de ${controls.length}`],
+      ['Créditos horarios de la empresa que no coinciden', `${controls.filter((c) => c.gap !== 0).length} de ${controls.length}`],
+      ['Debates abiertos o reclamados', String(controls.filter(isOpenDebate).length)],
       ['Incidencias de descanso / jornada detectadas', String(alerts.length)]
     ], { columnStyles: { 1: { halign: 'right', cellWidth: 52 } } });
 
     if (controls.length) {
-      ctx.h('Comparativa con los saldos comunicados por la empresa');
+      ctx.h('Comparativa con el crédito horario comunicado por la empresa');
       ctx.p('Saldo que la empresa indicó en cada fecha frente al saldo resultante de este registro en esa misma fecha (semanas cerradas y cargos hasta ese día).', { size: 8.2, color: GREY });
-      ctx.table(['Fecha', 'Fuente', 'Empresa', 'Mi registro', 'Diferencia', 'Nota'], controlRows(controls), { columnStyles: { 0: { cellWidth: 20 } } });
+      ctx.table(controlHead, controlRows(controls), { columnStyles: controlCols });
+      debateThreads(ctx, controls);
     }
 
     ctx.h('Evolución de la bolsa de horas');

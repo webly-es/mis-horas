@@ -1,5 +1,5 @@
 // Cambia la versión al publicar cambios para que el móvil descargue la nueva app.
-const VERSION = 'mishoras-v1';
+const VERSION = 'mishoras-v2';
 const SHELL = [
   './',
   'index.html',

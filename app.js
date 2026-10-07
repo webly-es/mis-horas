@@ -26,7 +26,7 @@ const CREDIT_TYPES = ['vacaciones', 'festivo', 'baja'];
 const MOV_KINDS = {
   favor: { label: 'A mi favor', short: 'H+', sign: 1 },
   contra: { label: 'En contra', short: 'H−', sign: -1 },
-  control: { label: 'Control oficial', short: 'Control', sign: 0 }
+  control: { label: 'Crédito horario', short: 'Crédito', sign: 0 }
 };
 const MOV_PRESETS = {
   favor: ['Curso de formación', 'Me quedé más tarde', 'Entré antes', 'Horas extra', 'Corrección a mi favor'],
@@ -200,14 +200,14 @@ function findDay(iso) {
 }
 
 /* Libro de horas: saldo inicial + diferencias semanales + movimientos, en orden cronológico */
-function ledger() {
+function ledger(weeks = S.weeks) {
   const today = todayISO();
   const items = [];
   const st = S.settings;
   if (st.saldoInicial || st.saldoInicialFecha) {
     items.push({ kind: 'inicial', date: st.saldoInicialFecha || '0000-01-01', delta: st.saldoInicial || 0, order: 0, closed: true });
   }
-  S.weeks.forEach((w) => {
+  weeks.forEach((w) => {
     const ws = weekStats(w);
     items.push({ kind: 'semana', date: weekEnd(w), delta: ws.diff, order: 2, week: w, stats: ws, closed: weekEnd(w) < today });
   });
@@ -216,18 +216,55 @@ function ledger() {
     else items.push({ kind: 'mov', date: m.date, delta: movDelta(m), order: 1, mov: m, closed: m.date <= today });
   });
   items.sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
+  // el ajuste generado al aceptar la cifra de la empresa no cuenta al comparar ese mismo control
+  const adjOf = {};
+  S.movs.forEach((m) => { if (m.adjustOf) adjOf[m.adjustOf] = (adjOf[m.adjustOf] || 0) + movDelta(m); });
   let bal = 0;
   items.forEach((it) => {
     if (it.kind === 'control') {
-      it.app = bal;
+      it.app = bal - (adjOf[it.mov.id] || 0);
       it.official = it.mov.officialSign * (it.mov.minutes || 0);
-      it.gap = it.official - bal;
+      it.gap = it.official - it.app;
     } else bal += it.delta;
     it.bal = bal;
   });
   const current = items.filter((i) => i.kind !== 'control' && i.closed).reduce((s, i) => s + i.delta, 0);
   const projected = bal;
   return { items, current, projected };
+}
+
+/* Saldo de mi registro en una fecha: semanas cerradas hasta ese día + cargos hasta ese día */
+function balanceAt(date, weeks = S.weeks) {
+  let bal = 0;
+  ledger(weeks).items.forEach((it) => {
+    if (it.kind !== 'control' && (it.date < date || (it.date === date && it.order <= 2))) bal += it.delta;
+  });
+  return bal;
+}
+
+/* Crédito horario comunicado por la empresa: estado del debate */
+const DEBATE = {
+  coincide: { label: 'Coincide', cls: 'pos', icon: 'shield' },
+  abierto: { label: 'Debate abierto', cls: 'warn', icon: 'alert' },
+  reclamado: { label: 'Reclamado a la empresa', cls: 'warn', icon: 'flag' },
+  aceptado: { label: 'Aceptada la cifra de la empresa', cls: 'info', icon: 'check' },
+  corregido: { label: 'Corregido por la empresa', cls: 'pos', icon: 'check' }
+};
+function controlStatus(it) {
+  const s = it.mov.status;
+  if (s === 'aceptado' || s === 'corregido') return s;
+  if (it.gap === 0) return 'coincide';
+  return s === 'reclamado' ? 'reclamado' : 'abierto';
+}
+const isOpenDebate = (it) => ['abierto', 'reclamado'].includes(controlStatus(it));
+function controlItem(id) { return ledger().items.find((i) => i.kind === 'control' && i.mov.id === id); }
+function compareHtml(off, app, date) {
+  const gap = off - app;
+  return `<div class="compare">
+    <div><span class="muted">Según la empresa</span><b class="num ${cls(off)}">${fmtDur(off, true)}</b></div>
+    <div><span class="muted">Según mi registro (${fmtNum(date)})</span><b class="num ${cls(app)}">${fmtDur(app, true)}</b></div>
+    <div style="border-top:1px solid var(--border);margin-top:4px;padding-top:7px"><span>Diferencia</span><b class="num" style="color:${gap === 0 ? 'var(--pos)' : 'var(--warn)'}">${gap === 0 ? 'Coincide ✓' : fmtDur(gap, true) + (gap < 0 ? ' en tu contra' : ' a tu favor')}</b></div>
+  </div>`;
 }
 
 /* Turnos concretos (con fecha y hora) para próximo turno, avisos y calendario */
@@ -405,16 +442,14 @@ VIEWS.inicio = () => {
   html += `<div class="section-title">Hoy</div>`;
   html += todayCard(today);
 
-  // Discrepancia con el último control oficial
+  // Crédito horario de la empresa: debates abiertos o último control
   const controls = L.items.filter((i) => i.kind === 'control');
-  if (controls.length) {
-    const last = controls[controls.length - 1];
-    const gap = last.gap;
-    html += `<div class="section-title">Último control oficial</div>
-    <div class="alert ${gap === 0 ? 'info' : 'warn'}">${ico(gap === 0 ? 'shield' : 'alert')}<div>
-      <b>${fmtNum(last.date)} · Empresa: ${fmtDur(last.official, true)} · Mi registro: ${fmtDur(last.app, true)}</b>
-      ${gap === 0 ? 'Coincide con tu registro.' : `Diferencia de <b style="display:inline">${fmtDur(Math.abs(gap))}</b> ${gap < 0 ? 'en tu contra: la empresa te computa menos horas de las que has registrado.' : 'a tu favor según la empresa.'}`}
-    </div></div>`;
+  const open = controls.filter(isOpenDebate);
+  if (open.length) {
+    html += `<div class="section-title">Debates abiertos (${open.length})</div>`;
+    html += open.reverse().map((c) => debateAlert(c)).join('');
+  } else if (controls.length) {
+    html += `<div class="section-title">Último crédito horario de la empresa</div>${debateAlert(controls[controls.length - 1])}`;
   }
 
   // Avisos legales recientes (últimos 30 días)
@@ -579,11 +614,15 @@ VIEWS.semana = (id) => {
     </div>`;
   }).join('')}</div>`;
 
-  if (st.movs.length || controls.length) {
-    html += `<div class="section-title">Movimientos de la semana</div><div class="card">${[...st.movs.map((m) => movRow(m)), ...controls.map((c) => controlRow(c))].join('')}</div>`;
+  if (st.movs.length) {
+    html += `<div class="section-title">Cargos de la semana</div><div class="card">${st.movs.map((m) => movRow(m)).join('')}</div>`;
   }
 
   if (w.comment) html += `<div class="section-title">Comentario</div><div class="card" style="white-space:pre-wrap;color:var(--text-2)">${esc(w.comment)}</div>`;
+
+  if (controls.length) {
+    html += `<div class="section-title">Crédito horario de la empresa</div>${controls.map((c) => debateAlert(c)).join('')}`;
+  }
 
   html += `<div class="actions">
     <button class="btn primary" data-act="weekPdf" data-id="${w.id}">${ico('file')} PDF semana</button>
@@ -607,11 +646,32 @@ function movRow(m) {
 }
 function controlRow(it) {
   const m = it.mov;
-  return `<button class="ledger-item" style="width:100%;text-align:left" data-act="editMov" data-id="${m.id}">
+  const s = DEBATE[controlStatus(it)];
+  return `<button class="ledger-item" style="width:100%;text-align:left" data-act="debate" data-id="${m.id}">
     <span class="li-icon c">${ico('flag')}</span>
-    <span class="li-body"><span class="li-title" style="display:block">${esc(m.concepto || 'Control oficial')}</span><span class="li-sub num">${fmtShort(m.date)} · Empresa ${fmtDur(it.official, true)} · Yo ${fmtDur(it.app, true)}</span></span>
-    <span class="li-amt"><b class="num ${it.gap === 0 ? 'zero' : 'neg'}" style="${it.gap === 0 ? '' : 'color:var(--warn)'}">${it.gap === 0 ? '✓' : 'Δ ' + fmtDur(it.gap, true)}</b><small>diferencia</small></span>
+    <span class="li-body"><span class="li-title" style="display:block">Crédito horario · ${esc(s.label)}</span><span class="li-sub num">${fmtShort(m.date)} · Empresa ${fmtDur(it.official, true)} · Yo ${fmtDur(it.app, true)}</span></span>
+    <span class="li-amt"><b class="num" style="color:${it.gap === 0 ? 'var(--pos)' : 'var(--warn)'}">${it.gap === 0 ? '✓' : 'Δ ' + fmtDur(it.gap, true)}</b><small>diferencia</small></span>
   </button>`;
+}
+function debateAlert(it) {
+  const st = controlStatus(it);
+  const s = DEBATE[st];
+  const m = it.mov;
+  const kind = st === 'coincide' || st === 'corregido' ? 'info' : st === 'aceptado' ? 'info' : 'warn';
+  const msg = {
+    coincide: 'La cifra de la empresa coincide con tu registro.',
+    abierto: `No coincide: diferencia de ${fmtDur(it.gap, true)}${it.gap < 0 ? ' en tu contra' : ' a tu favor'}. Decide si aceptas su cifra o la reclamas.`,
+    reclamado: `Has reclamado la diferencia de ${fmtDur(it.gap, true)}. Pendiente de que la empresa responda.`,
+    aceptado: 'Aceptaste la cifra de la empresa; tu saldo se ajustó.',
+    corregido: 'La empresa corrigió su cifra y reconoce tu registro.'
+  }[st];
+  const notes = (m.thread || []).length;
+  return `<button class="alert ${kind} debate-alert" data-act="debate" data-id="${m.id}">${ico(s.icon)}<div style="flex:1;min-width:0">
+    <span class="pill ${s.cls}">${s.label}</span>
+    <b class="num">${fmtNum(m.date)} · Empresa ${fmtDur(it.official, true)} · Yo ${fmtDur(it.app, true)}</b>
+    ${msg}${notes ? ` <span class="muted">· ${notes} nota${notes > 1 ? 's' : ''}</span>` : ''}
+    <span class="link-btn" style="display:block;padding-bottom:0">Ver debate →</span>
+  </div></button>`;
 }
 
 VIEWS.flujo = () => {
@@ -715,6 +775,15 @@ function openWeekEditor(id) {
   const orig = id ? S.weeks.find((w) => w.id === id) : null;
   const draft = orig ? JSON.parse(JSON.stringify(orig)) : { id: null, start: suggestStart(), jornadaMin: null, comment: '', days: Array.from({ length: 7 }, blankDay) };
   draft.days.forEach((d) => { if (!d.tramos || !d.tramos.length) d.tramos = [{ in: '', out: '' }]; });
+  // Crédito horario pedido a la empresa esta semana (control oficial vinculado a la semana)
+  const linked = orig ? S.movs.find((m) => m.kind === 'control' && m.weekId === orig.id) : null;
+  const defaultCreditDate = () => {
+    const t = todayISO();
+    return t >= draft.start && t <= addDays(draft.start, 6) ? t : addDays(draft.start, 6);
+  };
+  draft.credit = linked
+    ? { on: true, id: linked.id, date: linked.date, sign: linked.officialSign, minutes: linked.minutes, concepto: linked.concepto || '', nota: linked.nota || '' }
+    : { on: false, id: null, date: defaultCreditDate(), sign: -1, minutes: 0, concepto: '', nota: '' };
   const recents = recentJornadas();
 
   const body = `
@@ -728,7 +797,25 @@ function openWeekEditor(id) {
     <div class="hint muted small" id="wrange" style="margin:-8px 2px 12px"></div>
     ${!orig && S.weeks.length ? `<button type="button" class="btn sm" data-s="copyPrev" style="margin-bottom:14px">${ico('copy')} Copiar horario de la semana anterior</button>` : ''}
     <div id="wdays"></div>
-    <label class="field" style="margin-top:6px"><span>Comentario de la semana (aparece en el PDF)</span><textarea id="wc" placeholder="Ej.: El lunes me hicieron quedarme 1 h más; el horario de la foto no coincide con el del restaurante…">${esc(draft.comment)}</textarea></label>`;
+    <label class="field" style="margin-top:6px"><span>Comentario de la semana (aparece en el PDF)</span><textarea id="wc" placeholder="Ej.: El lunes me hicieron quedarme 1 h más; el horario de la foto no coincide con el del restaurante…">${esc(draft.comment)}</textarea></label>
+    <div class="credit-card">
+      <div class="credit-head"><div><b>Pedí el crédito horario a la empresa</b><small>Anota lo que te dicen y lo comparo con tu registro</small></div>
+        <label class="switch"><input type="checkbox" id="crOn" ${draft.credit.on ? 'checked' : ''}><i></i></label></div>
+      <div id="crBody" ${draft.credit.on ? '' : 'hidden'}>
+        <div class="row2" style="margin-top:14px">
+          <label class="field"><span>Fecha en que lo pediste</span><input type="date" id="crDate" value="${draft.credit.date}"></label>
+          <label class="field"><span>¿Quién / dónde?</span><input id="crSrc" value="${esc(draft.credit.concepto)}" placeholder="Encargado, ordenador…"></label>
+        </div>
+        <div class="seg" id="crSign">
+          <button type="button" data-cs="1">Positivo (+)</button>
+          <button type="button" data-cs="-1">Negativo (−)</button>
+        </div>
+        <div class="hm field"><label><input id="crH" inputmode="decimal" placeholder="0" value="${draft.credit.minutes ? Math.floor(draft.credit.minutes / 60) : ''}"><em>h</em></label>
+          <label><input id="crM" inputmode="numeric" placeholder="0" value="${draft.credit.minutes ? draft.credit.minutes % 60 : ''}"><em>min</em></label></div>
+        <div id="crCmp"></div>
+        <label class="field" style="margin-top:12px;margin-bottom:0"><span>Nota (qué te dijeron exactamente)</span><input id="crNote" value="${esc(draft.credit.nota)}" placeholder="Ej.: Me dijo que estoy en −2,5 h y que no le constan los cursos"></label>
+      </div>
+    </div>`;
   const footer = `<div class="foot-sum"><span>Computadas <b class="num" id="fTot">0h</b></span><span>Jornada <b class="num" id="fJor">—</b></span><span>Dif. <b class="num" id="fDif">—</b></span></div>
     <button class="btn primary block" data-s="saveWeek">${orig ? 'Guardar cambios' : 'Guardar semana'}</button>`;
 
@@ -793,6 +880,48 @@ function openWeekEditor(id) {
     });
     $('#wc', wrap).addEventListener('input', (e) => { draft.comment = e.target.value; });
 
+    // Crédito horario: comparación en vivo con mi registro (teniendo en cuenta los cambios de esta semana)
+    const cr = draft.credit;
+    const renderCredit = () => {
+      $('#crBody', wrap).hidden = !cr.on;
+      $$('#crSign button', wrap).forEach((b) => { const on = Number(b.dataset.cs) === cr.sign; b.className = on ? `on ${cr.sign > 0 ? 'pos' : 'neg'}` : ''; });
+      const el = $('#crCmp', wrap);
+      if (!cr.on) { el.innerHTML = ''; return; }
+      if (draft.jornadaMin == null) { el.innerHTML = '<p class="muted small" style="margin:0">Indica primero la jornada de la semana para poder comparar.</p>'; return; }
+      const others = S.weeks.filter((w) => !orig || w.id !== orig.id);
+      const adj = linked && linked.adjustId ? S.movs.find((x) => x.id === linked.adjustId) : null;
+      const app = balanceAt(cr.date, [...others, { ...draft, id: draft.id || '__draft' }]) - (adj && adj.date <= cr.date ? movDelta(adj) : 0);
+      const off = cr.sign * cr.minutes;
+      const gap = off - app;
+      el.innerHTML = compareHtml(off, app, cr.date) + (gap === 0
+        ? ''
+        : `<div class="alert warn" style="margin-top:10px">${ico('alert')}<div><b>No coincide: se abrirá un debate</b>Podrás aceptar su cifra (la diferencia se suma o resta a tu saldo) o mantener tu registro y reclamarlo.</div></div>`)
+        + (cr.date < addDays(draft.start, 6) ? '<p class="muted small" style="margin:8px 2px 0">Tu registro a esa fecha cuenta las semanas ya cerradas; esta semana entra al cerrar el domingo.</p>' : '');
+    };
+    const readCredit = () => {
+      const h = parseFloat(($('#crH', wrap).value || '0').replace(',', '.')) || 0;
+      cr.minutes = Math.round(h * 60) + (parseInt($('#crM', wrap).value, 10) || 0);
+      cr.date = $('#crDate', wrap).value || cr.date;
+      cr.concepto = $('#crSrc', wrap).value.trim();
+      cr.nota = $('#crNote', wrap).value.trim();
+    };
+    renderCredit();
+    $('#crOn', wrap).addEventListener('change', (e) => {
+      cr.on = e.target.checked;
+      renderCredit();
+      if (cr.on) setTimeout(() => $('#crH', wrap).focus(), 50);
+    });
+    $('#crSign', wrap).addEventListener('click', (e) => {
+      const b = e.target.closest('[data-cs]');
+      if (b) { cr.sign = Number(b.dataset.cs); renderCredit(); }
+    });
+    ['crH', 'crM', 'crDate', 'crSrc', 'crNote'].forEach((id) => {
+      $('#' + id, wrap).addEventListener('input', () => { readCredit(); if (!['crSrc', 'crNote'].includes(id)) renderCredit(); });
+    });
+    wrap.addEventListener('input', (e) => { if (e.target.dataset.f || e.target.id === 'wj') renderCredit(); });
+    wrap.addEventListener('change', (e) => { if (e.target.id === 'ws') renderCredit(); });
+    wrap.addEventListener('click', (e) => { if (e.target.closest('[data-s]')) setTimeout(renderCredit, 0); });
+
     wrap.addEventListener('input', (e) => {
       const f = e.target.dataset.f;
       if (!f) return;
@@ -856,7 +985,10 @@ async function saveWeek(draft, orig, wrap) {
     toast('Ya existe una semana que empieza ese lunes', 'error');
     return;
   }
+  const credit = draft.credit;
+  if (credit.on && !credit.date) { toast('Indica la fecha en que pediste el crédito horario', 'error'); return; }
   const clean = JSON.parse(JSON.stringify(draft));
+  delete clean.credit;
   clean.days.forEach((d) => {
     d.tramos = d.type === 'trabajo' ? d.tramos.filter(validTramo) : [];
     if (d.type !== 'trabajo') d.descanso = 0;
@@ -879,21 +1011,61 @@ async function saveWeek(draft, orig, wrap) {
       if ((orig.days[i].nota || '') !== d.nota) changes.push(`${DAYS_SHORT[i]} ${date}: nota "${orig.days[i].nota || ''}" -> "${d.nota}"`);
     });
     if ((orig.comment || '') !== (clean.comment || '')) changes.push('Comentario de la semana modificado');
-    if (!changes.length) { closeSheet(); return; }
-    Object.assign(orig, clean, { updatedAt: now });
-    logEv('Editada', 'semana', fmtRange(clean.start), changes.join('\n'));
-    toast('Semana actualizada');
+    if (changes.length) {
+      Object.assign(orig, clean, { updatedAt: now });
+      logEv('Editada', 'semana', fmtRange(clean.start), changes.join('\n'));
+    }
   } else {
     clean.id = uid();
     clean.createdAt = now;
     clean.updatedAt = now;
     S.weeks.push(clean);
     logEv('Creada', 'semana', fmtRange(clean.start), `Jornada ${fmtDur(clean.jornadaMin)}\n` + clean.days.map((d, i) => `${DAYS_SHORT[i]} ${fmtNum(addDays(clean.start, i))}: ${describeDay(d)}${d.nota ? ' - ' + d.nota : ''}`).join('\n'));
-    toast('Semana guardada');
   }
+  const weekId = orig ? orig.id : clean.id;
+  const creditMsg = syncWeekCredit(weekId, credit);
   save();
   closeSheet();
-  go(`#/semana/${orig ? orig.id : clean.id}`);
+  toast(creditMsg || (orig ? 'Semana actualizada' : 'Semana guardada'), creditMsg && creditMsg.startsWith('No coincide') ? 'error' : 'ok');
+  go(`#/semana/${weekId}`);
+}
+
+/* Crea, actualiza o quita el crédito horario vinculado a una semana. Devuelve un aviso si no coincide. */
+function syncWeekCredit(weekId, cr) {
+  const existing = S.movs.find((m) => m.kind === 'control' && m.weekId === weekId);
+  const now = new Date().toISOString();
+  if (!cr.on) {
+    if (existing) {
+      removeControl(existing);
+      logEv('Eliminado', 'crédito horario', fmtNum(existing.date), movText(existing));
+    }
+    return '';
+  }
+  const data = { kind: 'control', weekId, date: cr.date, minutes: cr.minutes, officialSign: cr.sign, concepto: cr.concepto, nota: cr.nota };
+  let m;
+  if (existing) {
+    const before = movText(existing);
+    Object.assign(existing, data);
+    if (movText(existing) !== before) {
+      existing.updatedAt = now;
+      logEv('Editado', 'crédito horario', fmtNum(cr.date), `${before}\n-> ${movText(existing)}`);
+    }
+    m = existing;
+  } else {
+    m = { id: uid(), ...data, status: '', thread: [], createdAt: now, updatedAt: now };
+    S.movs.push(m);
+    logEv('Creado', 'crédito horario', fmtNum(cr.date), movText(m));
+  }
+  const it = controlItem(m.id);
+  if (it.gap === 0) return 'Crédito horario: coincide con tu registro ✓';
+  if (!['aceptado', 'corregido'].includes(m.status)) return `No coincide (${fmtDur(it.gap, true)}): debate abierto`;
+  return '';
+}
+
+/* Borra un control y, si existía, el ajuste que generó al aceptar la cifra de la empresa */
+function removeControl(m) {
+  if (m.adjustId) S.movs = S.movs.filter((x) => x.id !== m.adjustId);
+  S.movs = S.movs.filter((x) => x.id !== m.id);
 }
 
 /* ---------- Editor de movimientos ---------- */
@@ -906,7 +1078,7 @@ function openMovEditor(id, presetKind) {
     <div class="seg" id="mk">
       <button type="button" data-k="favor" class="${draft.kind === 'favor' ? 'on pos' : ''}">H+ a favor</button>
       <button type="button" data-k="contra" class="${draft.kind === 'contra' ? 'on neg' : ''}">H− en contra</button>
-      <button type="button" data-k="control" class="${draft.kind === 'control' ? 'on warn' : ''}">Control</button>
+      <button type="button" data-k="control" class="${draft.kind === 'control' ? 'on warn' : ''}">Crédito</button>
     </div>
     <p class="muted small" id="mkHelp" style="margin:-4px 2px 14px"></p>
     <label class="field"><span>Fecha</span><input type="date" id="md" value="${draft.date}"></label>
@@ -955,16 +1127,10 @@ function openMovEditor(id, presetKind) {
       if (draft.kind !== 'control') { el.innerHTML = ''; return; }
       // saldo de mi registro a esa fecha (sin contar este control)
       const date = $('#md', wrap).value || todayISO();
-      const L = ledger();
-      let app = 0;
-      L.items.forEach((it) => { if (it.kind !== 'control' && (it.date < date || (it.date === date && it.order <= 2))) app += it.delta; });
-      const off = draft.officialSign * readMinutes();
-      const gap = off - app;
-      el.innerHTML = `<div class="compare" style="margin:-4px 0 14px">
-        <div><span class="muted">Según la empresa</span><b class="num ${cls(off)}">${fmtDur(off, true)}</b></div>
-        <div><span class="muted">Según mi registro (${fmtNum(date)})</span><b class="num ${cls(app)}">${fmtDur(app, true)}</b></div>
-        <div style="border-top:1px solid var(--border);margin-top:4px;padding-top:7px"><span>Diferencia</span><b class="num" style="color:${gap === 0 ? 'var(--pos)' : 'var(--warn)'}">${gap === 0 ? 'Coincide ✓' : fmtDur(gap, true) + (gap < 0 ? ' en tu contra' : '')}</b></div>
-      </div>`;
+      // si ya aceptaste la cifra de la empresa, el ajuste no cuenta para comparar
+      const adj = orig && orig.adjustId ? S.movs.find((x) => x.id === orig.adjustId) : null;
+      const app = balanceAt(date) - (adj && adj.date <= date ? movDelta(adj) : 0);
+      el.innerHTML = `<div style="margin:-4px 0 14px">${compareHtml(draft.officialSign * readMinutes(), app, date)}</div>`;
     };
     refresh();
 
@@ -981,7 +1147,11 @@ function openMovEditor(id, presetKind) {
       if (!b) return;
       if (b.dataset.s === 'delMov') {
         if (await confirmBox('Eliminar movimiento', 'Quedará anotado en el historial de cambios.', 'Eliminar', true)) {
-          S.movs = S.movs.filter((m) => m.id !== orig.id);
+          if (orig.kind === 'control') removeControl(orig);
+          else S.movs = S.movs.filter((m) => m.id !== orig.id);
+          // si era el ajuste de un crédito horario aceptado, el debate vuelve a quedar abierto
+          const ctl = S.movs.find((m) => m.adjustId === orig.id);
+          if (ctl) { ctl.status = ''; ctl.adjustId = null; (ctl.thread = ctl.thread || []).push({ ts: new Date().toISOString(), text: 'Eliminado el ajuste: debate reabierto.' }); }
           logEv('Eliminado', 'movimiento', fmtNum(orig.date), movText(orig));
           save(); closeSheet(); route(); toast('Movimiento eliminado');
         }
@@ -1002,9 +1172,13 @@ function openMovEditor(id, presetKind) {
           toast('Movimiento actualizado');
         } else {
           const m = { id: uid(), ...data, createdAt: now, updatedAt: now };
+          if (m.kind === 'control') { m.status = ''; m.thread = []; }
           S.movs.push(m);
           logEv('Creado', 'movimiento', fmtNum(date), movText(m));
-          toast(draft.kind === 'control' ? 'Control registrado' : 'Movimiento guardado');
+          if (m.kind === 'control') {
+            const it = controlItem(m.id);
+            toast(it.gap === 0 ? 'Coincide con tu registro ✓' : `No coincide (${fmtDur(it.gap, true)}): debate abierto`, it.gap === 0 ? 'ok' : 'error');
+          } else toast('Movimiento guardado');
         }
         save(); closeSheet(); route();
       }
@@ -1014,6 +1188,104 @@ function openMovEditor(id, presetKind) {
 function movText(m) {
   if (m.kind === 'control') return `Control oficial ${fmtNum(m.date)}: empresa indica ${fmtDur(m.officialSign * m.minutes, true)} · ${m.concepto || ''}${m.nota ? ' · ' + m.nota : ''}`;
   return `${MOV_KINDS[m.kind].short} ${fmtDur(movDelta(m), true)} el ${fmtNum(m.date)} · ${m.concepto || ''}${m.nota ? ' · ' + m.nota : ''}`;
+}
+
+/* ---------- Debate del crédito horario ---------- */
+function openDebate(id) {
+  if (!controlItem(id)) return;
+  const wrap = openSheet('Crédito horario', '', '<div id="dbFoot"></div>');
+  const body = $('.sheet-body', wrap);
+  const render = () => {
+    const it = controlItem(id);
+    if (!it) { closeSheet(); route(); return; }
+    const m = it.mov;
+    const st = controlStatus(it);
+    const s = DEBATE[st];
+    const week = m.weekId ? S.weeks.find((w) => w.id === m.weekId) : null;
+    const thread = m.thread || [];
+    const gapTxt = `${fmtDur(Math.abs(it.gap))} ${it.gap < 0 ? 'en tu contra' : 'a tu favor'}`;
+    let actions = '';
+    if (st === 'abierto' || st === 'reclamado') {
+      actions = `
+        <button class="btn block" data-d="accept">${ico('check')} Aceptar su cifra · ${it.gap > 0 ? 'sumar' : 'restar'} ${fmtDur(Math.abs(it.gap))}</button>
+        ${st === 'abierto' ? `<button class="btn block" data-d="claim">${ico('flag')} Mantener mi registro y reclamar</button>` : ''}
+        <button class="btn block" data-d="fixed">${ico('shield')} La empresa corrigió su cifra</button>`;
+    } else if (st === 'aceptado' || st === 'corregido') {
+      actions = `<button class="btn block" data-d="reopen">${ico('history')} ${st === 'aceptado' ? 'Deshacer ajuste y reabrir' : 'Reabrir debate'}</button>`;
+    }
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px">
+        <span class="pill ${s.cls}" style="margin:0">${s.label}</span>
+        <span class="muted small">${fmtShort(m.date)}${week ? ` · semana ${fmtRange(week.start)}` : ''}</span>
+      </div>
+      ${compareHtml(it.official, it.app, m.date)}
+      ${m.concepto || m.nota ? `<p class="small" style="color:var(--text-2);margin:10px 2px 0">${esc([m.concepto, m.nota].filter(Boolean).join(' · '))}</p>` : ''}
+      ${st !== 'coincide' ? `<p class="muted small" style="margin:12px 2px 0">${{
+        abierto: `Tu registro y la empresa no coinciden (${gapTxt}). Elige qué hacer; todo queda anotado con fecha y hora.`,
+        reclamado: 'Mantienes tu registro. Añade notas con lo que te respondan (quién, cuándo, qué dijo).',
+        aceptado: 'Aceptaste la cifra de la empresa: se añadió un ajuste a tu bolsa por la diferencia.',
+        corregido: 'La empresa reconoció tu registro. Tu saldo no cambia.'
+      }[st]}</p>` : ''}
+      ${actions ? `<div class="debate-actions">${actions}</div>` : ''}
+      <div class="form-group-title" style="margin-top:22px">Debate · ${thread.length} nota${thread.length === 1 ? '' : 's'}</div>
+      ${thread.length ? `<div class="thread">${thread.map((t) => `<div class="thread-item"><div class="lt num">${fmtTs(t.ts)}</div><div>${esc(t.text)}</div></div>`).join('')}</div>` : '<p class="muted small" style="margin:0 2px 12px">Aún no hay notas.</p>'}
+      <label class="field" style="margin-top:12px"><span>Añadir nota</span><textarea id="dbNote" placeholder="Ej.: Hablé con el encargado, dice que lo revisará con la gestoría."></textarea></label>
+      <button class="btn block" data-d="note">${ico('plus')} Añadir nota al debate</button>`;
+    $('#dbFoot', wrap).innerHTML = `<div style="display:flex;gap:10px"><button class="btn" style="flex:1" data-d="edit">${ico('edit')} Editar datos</button>${week ? `<a class="btn" style="flex:1;text-decoration:none" href="#/semana/${week.id}" data-d="week">${ico('cal')} Ver semana</a>` : ''}</div>`;
+  };
+  const addNote = (m, text) => { (m.thread = m.thread || []).push({ ts: new Date().toISOString(), text }); };
+  render();
+
+  wrap.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-d]');
+    if (!b) return;
+    const it = controlItem(id);
+    const m = it.mov;
+    const a = b.dataset.d;
+    const now = new Date().toISOString();
+    if (a === 'note') {
+      const text = $('#dbNote', wrap).value.trim();
+      if (!text) { toast('Escribe la nota', 'error'); return; }
+      addNote(m, text);
+      logEv('Nota', 'debate crédito horario', fmtNum(m.date), text);
+    } else if (a === 'accept') {
+      const gap = it.gap;
+      if (!(await confirmBox('Aceptar la cifra de la empresa', `Se ${gap > 0 ? 'sumarán' : 'restarán'} ${fmtDur(Math.abs(gap))} a tu bolsa para igualarla a lo que dice la empresa (${fmtDur(it.official, true)}).`, 'Aceptar'))) return;
+      const adj = { id: uid(), kind: gap > 0 ? 'favor' : 'contra', date: m.date, minutes: Math.abs(gap), concepto: 'Ajuste: acepto el crédito horario de la empresa', nota: `Empresa ${fmtDur(it.official, true)} / mi registro ${fmtDur(it.app, true)}`, adjustOf: m.id, createdAt: now, updatedAt: now };
+      S.movs.push(adj);
+      m.adjustId = adj.id;
+      m.status = 'aceptado';
+      addNote(m, `Acepto la cifra de la empresa (${fmtDur(it.official, true)}). Ajuste de ${fmtDur(gap, true)} aplicado a mi saldo.`);
+      logEv('Aceptado', 'debate crédito horario', fmtNum(m.date), `Ajuste ${fmtDur(gap, true)} para igualar a la empresa (${fmtDur(it.official, true)})`);
+    } else if (a === 'claim') {
+      m.status = 'reclamado';
+      addNote(m, `Mantengo mi registro (${fmtDur(it.app, true)}) y reclamo la diferencia de ${fmtDur(it.gap, true)}.`);
+      logEv('Reclamado', 'debate crédito horario', fmtNum(m.date), `Empresa ${fmtDur(it.official, true)} / yo ${fmtDur(it.app, true)}`);
+    } else if (a === 'fixed') {
+      m.status = 'corregido';
+      addNote(m, 'La empresa corrige su cifra y reconoce mi registro.');
+      logEv('Corregido', 'debate crédito horario', fmtNum(m.date), 'La empresa reconoce mi registro');
+    } else if (a === 'reopen') {
+      if (m.adjustId) S.movs = S.movs.filter((x) => x.id !== m.adjustId);
+      m.adjustId = null;
+      m.status = '';
+      addNote(m, 'Debate reabierto.');
+      logEv('Reabierto', 'debate crédito horario', fmtNum(m.date), '');
+    } else if (a === 'edit') {
+      closeSheet();
+      afterSheet(() => openMovEditor(id));
+      return;
+    } else if (a === 'week') {
+      e.preventDefault();
+      closeSheet();
+      go(`#/semana/${m.weekId}`);
+      return;
+    }
+    m.updatedAt = now;
+    save();
+    render();
+    route();
+  });
 }
 
 /* ---------- Perfil y ajustes ---------- */
@@ -1155,7 +1427,7 @@ const ACT = {
       <button data-close data-act="newWeek"><span class="qi v">${ico('cal')}</span><div><b>Nueva semana</b><small>Horario de cada día y jornada semanal</small></div></button>
       <button data-close data-act="newMov" data-k="favor"><span class="qi t">${ico('up')}</span><div><b>Horas a mi favor (H+)</b><small>Cursos, me quedé más, entré antes…</small></div></button>
       <button data-close data-act="newMov" data-k="contra"><span class="qi" style="background:var(--neg-soft);color:var(--neg)">${ico('down')}</span><div><b>Horas en contra (H−)</b><small>Salí antes, me devolvieron horas…</small></div></button>
-      <button data-close data-act="newMov" data-k="control"><span class="qi a">${ico('flag')}</span><div><b>Control oficial de la empresa</b><small>Lo que te dicen que tienes de saldo</small></div></button>
+      <button data-close data-act="newMov" data-k="control"><span class="qi a">${ico('flag')}</span><div><b>Crédito horario de la empresa</b><small>Lo que te dicen que tienes de saldo</small></div></button>
     </div>`);
   },
   newWeek() { afterSheet(() => openWeekEditor()); },
@@ -1172,6 +1444,7 @@ const ACT = {
   },
   newMov(d) { afterSheet(() => openMovEditor(null, d.k)); },
   editMov(d) { openMovEditor(d.id); },
+  debate(d) { openDebate(d.id); },
   editProfile() { openProfileEditor(); },
   settings() { openSettings(); },
   goHistory() { go('#/historial'); },

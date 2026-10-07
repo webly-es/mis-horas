@@ -459,3 +459,22 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="time"]::-webk
 /* Evita que los inputs flexibles desborden en pantallas estrechas */
 .jc-input input, .tramo input, .hm input { min-width: 0; width: 100%; }
 .sheet-body, .view { overflow-x: clip; }
+
+/* ============ Crédito horario y debates ============ */
+.credit-card { border-radius: 20px; padding: 16px; margin: 4px 0 8px; background: linear-gradient(160deg, rgba(251, 191, 36, .10), rgba(139, 124, 246, .05)); border: 1px solid rgba(251, 191, 36, .28); }
+.credit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.credit-head b { display: block; font-size: 15px; font-weight: 700; }
+.credit-head small { display: block; color: var(--text-2); font-size: 12.5px; margin-top: 2px; }
+.pill { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .02em; padding: 3px 9px; border-radius: 99px; margin-bottom: 6px; }
+.pill.warn { background: rgba(251, 191, 36, .16); color: var(--warn); }
+.pill.pos { background: var(--pos-soft); color: var(--pos); }
+.pill.info { background: var(--accent-soft); color: var(--accent); }
+.debate-alert { width: 100%; text-align: left; cursor: pointer; }
+.debate-alert:active { filter: brightness(1.15); }
+.debate-alert b { margin: 2px 0 3px; }
+.debate-actions { display: grid; gap: 10px; margin-top: 16px; }
+.debate-actions .btn { justify-content: flex-start; }
+.thread { border-left: 2px solid var(--border-2); margin-left: 6px; padding-left: 14px; }
+.thread-item { position: relative; padding: 0 0 14px; font-size: 14px; color: var(--text-2); white-space: pre-wrap; }
+.thread-item::before { content: ''; position: absolute; left: -20px; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--bg-2); }
+.thread-item .lt { color: var(--muted); font-size: 12px; margin-bottom: 2px; }
